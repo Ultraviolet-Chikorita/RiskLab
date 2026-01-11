@@ -1,0 +1,43 @@
+# Core dependencies
+langgraph>=0.2.0
+langchain>=0.3.0
+langchain-openai>=0.2.0
+langchain-anthropic>=0.2.0
+langchain-huggingface>=0.1.0
+
+# Model providers
+openai>=1.0.0
+anthropic>=0.30.0
+transformers>=4.40.0
+torch>=2.0.0
+huggingface-hub>=0.23.0
+accelerate>=0.30.0
+
+# Data handling
+pydantic>=2.0.0
+numpy>=1.24.0
+pandas>=2.0.0
+scipy>=1.10.0
+datasets>=2.15.0
+
+# Visualization
+matplotlib>=3.7.0
+seaborn>=0.12.0
+plotly>=5.15.0
+
+# Utilities
+python-dotenv>=1.0.0
+pyyaml>=6.0.0
+rich>=13.0.0
+typer>=0.12.0
+tqdm>=4.65.0
+
+# Testing and validation
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+
+# Optional: for enhanced white-box analysis
+sae-lens>=0.1.0                                     # Pre-trained SAEs for interpretability
+nnsight>=0.2.0                                      # Neural network inspection
+git+https://github.com/davidbau/baukit        # Activation patching utilities
+transformer-lens>=0.0.0                             # Mechanistic interpretability
