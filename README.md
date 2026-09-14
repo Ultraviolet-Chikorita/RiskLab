@@ -32,9 +32,7 @@ RiskLab currently includes:
 
 The white-box components are exploratory infrastructure. Names such as "deception probe" describe intended research targets, **not validated detectors**.
 
-## Good places to start when reviewing the code
-
-If you are reading this repository as a coding sample, these files show the main design choices:
+## Key components
 
 - [`risklab/governance/judge.py`](risklab/governance/judge.py) — schema-validated evaluator output, visibility policies, resource accounting, and fail-closed fallback.
 - [`risklab/governance/provenance.py`](risklab/governance/provenance.py) — semantic scores, provenance chains, aggregation, and audit validation.
@@ -218,8 +216,8 @@ RiskLab is an alpha research codebase. Important limitations include:
 
 These are design constraints to investigate, not hidden guarantees.
 
-## Status
+## Project status
 
-The repository is being cleaned toward a narrower goal: a reproducible, inspectable evaluation framework with explicit contracts around evidence, uncertainty, and provenance.
+The current focus is a reproducible, inspectable evaluation framework with explicit contracts around evidence, uncertainty, and provenance.
 
 License: MIT.
