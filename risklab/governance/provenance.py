@@ -1,27 +1,33 @@
-"""
-Provenance Tracking System for RiskLab.
+"""Provenance primitives for RiskLab evaluation signals.
 
-Enforces the core design invariant:
-"Every risk score must be explainable, decomposable, and reproducible"
-
-Provides:
-- Full computation chain tracking
-- Semantic score wrappers (no float without semantics)
-- Audit trail generation
-- Reproducibility verification
+The goal of this module is narrower than proving that an evaluation is
+"correct": it records where a score came from, how it was combined, and which
+upstream scores contributed to it so an evaluation can be inspected later.
 """
 
-from typing import Optional, List, Dict, Any, Union, TypeVar, Generic
-from datetime import datetime
-from enum import Enum
-from pydantic import BaseModel, Field, field_validator
+from __future__ import annotations
+
+import functools
 import hashlib
 import json
-from dataclasses import dataclass
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Any, Dict, List, Optional
+
+from pydantic import BaseModel, Field, field_validator
+
+
+def _utcnow() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _timestamp_id() -> str:
+    return _utcnow().strftime("%Y%m%d%H%M%S%f")
 
 
 class EvaluatorType(str, Enum):
     """Type of evaluator that produced a score."""
+
     RULE_BASED = "rule_based"
     ML_CLASSIFIER = "ml_classifier"
     LLM_JUDGE = "llm_judge"
@@ -29,146 +35,120 @@ class EvaluatorType(str, Enum):
     HUMAN = "human"
     COUNCIL = "council"
     AGGREGATED = "aggregated"
-    COMPUTED = "computed"  # Derived from other scores
+    COMPUTED = "computed"
 
 
 class ComputationMethod(str, Enum):
     """How a score was computed."""
-    DIRECT = "direct"  # Single evaluation
-    AVERAGED = "averaged"  # Mean of multiple
-    WEIGHTED = "weighted"  # Weighted combination
-    MAX = "max"  # Maximum of inputs
-    MIN = "min"  # Minimum of inputs
-    FORMULA = "formula"  # Custom formula
-    THRESHOLD = "threshold"  # Binary threshold
-    NORMALIZED = "normalized"  # Normalized from raw
+
+    DIRECT = "direct"
+    AVERAGED = "averaged"
+    WEIGHTED = "weighted"
+    MAX = "max"
+    MIN = "min"
+    FORMULA = "formula"
+    THRESHOLD = "threshold"
+    NORMALIZED = "normalized"
 
 
 class ProvenanceRecord(BaseModel):
-    """
-    Complete provenance record for a score.
-    
-    This is the atomic unit of auditability - every score
-    must have one of these attached.
-    """
-    
-    # Unique identifier for this computation
-    provenance_id: str = Field(default_factory=lambda: datetime.utcnow().strftime("%Y%m%d%H%M%S%f"))
-    
-    # When was this computed
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
-    
-    # What type of evaluator produced this
+    """Metadata required to trace one evaluation signal."""
+
+    provenance_id: str = Field(default_factory=_timestamp_id)
+    timestamp: datetime = Field(default_factory=_utcnow)
+
     evaluator_type: EvaluatorType
-    evaluator_id: str = ""  # Specific identifier (e.g., "gpt-4", "toxicity_bert", "rule_sycophancy_v2")
+    evaluator_id: str = ""
     evaluator_version: str = ""
-    
-    # How was it computed
+
     computation_method: ComputationMethod = ComputationMethod.DIRECT
-    computation_formula: Optional[str] = None  # For FORMULA type
-    
-    # What were the inputs
-    input_scores: Dict[str, float] = Field(default_factory=dict)  # provenance_id -> value
-    input_text_hash: Optional[str] = None  # Hash of input text for reproducibility
-    input_context_hash: Optional[str] = None  # Hash of context
-    
-    # Weights used (if any)
+    computation_formula: Optional[str] = None
+
+    input_scores: Dict[str, float] = Field(default_factory=dict)
+    input_text_hash: Optional[str] = None
+    input_context_hash: Optional[str] = None
     weights_applied: Dict[str, float] = Field(default_factory=dict)
-    
-    # Evidence and reasoning
+
     evidence: List[str] = Field(default_factory=list)
     reasoning: Optional[str] = None
-    
-    # Confidence in this computation
+
     confidence: float = Field(default=1.0, ge=0.0, le=1.0)
     confidence_factors: Dict[str, float] = Field(default_factory=dict)
-    
-    # For reproducibility
+
     random_seed: Optional[int] = None
     model_temperature: Optional[float] = None
-    
-    # Parent provenance (for aggregated/computed scores)
     parent_provenances: List[str] = Field(default_factory=list)
-    
+
     def get_hash(self) -> str:
-        """Get deterministic hash of this provenance for verification."""
+        """Return a deterministic fingerprint of computation-relevant fields."""
+
         data = {
             "evaluator_type": self.evaluator_type.value,
             "evaluator_id": self.evaluator_id,
+            "evaluator_version": self.evaluator_version,
             "computation_method": self.computation_method.value,
+            "computation_formula": self.computation_formula,
             "input_scores": self.input_scores,
             "input_text_hash": self.input_text_hash,
+            "input_context_hash": self.input_context_hash,
             "weights_applied": self.weights_applied,
+            "random_seed": self.random_seed,
+            "model_temperature": self.model_temperature,
         }
-        return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()[:16]
+        serialized = json.dumps(data, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(serialized.encode()).hexdigest()[:16]
 
 
 class SemanticScore(BaseModel):
-    """
-    A score with mandatory semantic context and provenance.
-    
-    This enforces the invariant: "No float without semantics"
-    
-    NEVER use raw floats for scores - always wrap in SemanticScore.
-    """
-    
-    # The actual value
+    """A bounded score with explicit meaning and provenance."""
+
     value: float = Field(ge=0.0, le=1.0)
-    
-    # What does this score represent
     metric_name: str
     metric_description: str = ""
-    
-    # What does the scale mean
     scale_low: str = "0.0 = none/absent"
     scale_high: str = "1.0 = maximum/complete"
-    
-    # Is higher better or worse?
-    higher_is_worse: bool = False  # True for risk scores, False for quality scores
-    
-    # Full provenance
+    higher_is_worse: bool = False
     provenance: ProvenanceRecord
-    
-    # Optional: human-interpretable level
     interpretation: Optional[str] = None
-    
-    @field_validator('value')
+
+    @field_validator("value")
     @classmethod
-    def validate_value(cls, v):
-        if not isinstance(v, (int, float)):
-            raise ValueError(f"Score value must be numeric, got {type(v)}")
-        return float(v)
-    
+    def validate_value(cls, value: float) -> float:
+        if not isinstance(value, (int, float)):
+            raise ValueError(f"Score value must be numeric, got {type(value)}")
+        return float(value)
+
     def get_interpretation(self) -> str:
-        """Get human-readable interpretation."""
+        """Return a coarse human-readable band for the score."""
+
         if self.interpretation:
             return self.interpretation
-        
+
         if self.higher_is_worse:
-            if self.value < 0.2:
-                return "minimal"
-            elif self.value < 0.4:
-                return "low"
-            elif self.value < 0.6:
-                return "moderate"
-            elif self.value < 0.8:
-                return "high"
-            else:
-                return "severe"
+            bands = (
+                (0.2, "minimal"),
+                (0.4, "low"),
+                (0.6, "moderate"),
+                (0.8, "high"),
+            )
+            fallback = "severe"
         else:
-            if self.value < 0.2:
-                return "very poor"
-            elif self.value < 0.4:
-                return "poor"
-            elif self.value < 0.6:
-                return "moderate"
-            elif self.value < 0.8:
-                return "good"
-            else:
-                return "excellent"
-    
+            bands = (
+                (0.2, "very poor"),
+                (0.4, "poor"),
+                (0.6, "moderate"),
+                (0.8, "good"),
+            )
+            fallback = "excellent"
+
+        for upper_bound, label in bands:
+            if self.value < upper_bound:
+                return label
+        return fallback
+
     def to_audit_entry(self) -> Dict[str, Any]:
-        """Export as audit trail entry."""
+        """Export a compact representation suitable for audit reports."""
+
         return {
             "metric": self.metric_name,
             "value": self.value,
@@ -176,7 +156,10 @@ class SemanticScore(BaseModel):
             "higher_is_worse": self.higher_is_worse,
             "provenance": {
                 "id": self.provenance.provenance_id,
-                "evaluator": f"{self.provenance.evaluator_type.value}:{self.provenance.evaluator_id}",
+                "evaluator": (
+                    f"{self.provenance.evaluator_type.value}:"
+                    f"{self.provenance.evaluator_id}"
+                ),
                 "method": self.provenance.computation_method.value,
                 "confidence": self.provenance.confidence,
                 "timestamp": self.provenance.timestamp.isoformat(),
@@ -187,12 +170,8 @@ class SemanticScore(BaseModel):
 
 
 class StrictScoreFactory:
-    """
-    Factory for creating scores with mandatory provenance.
-    
-    Use this instead of raw floats to ensure provenance is always tracked.
-    """
-    
+    """Construct scores while preserving provenance across transformations."""
+
     @staticmethod
     def from_rule(
         value: float,
@@ -202,15 +181,13 @@ class StrictScoreFactory:
         higher_is_worse: bool = True,
         metric_description: str = "",
     ) -> SemanticScore:
-        """Create score from rule-based evaluation."""
         provenance = ProvenanceRecord(
             evaluator_type=EvaluatorType.RULE_BASED,
             evaluator_id=rule_id,
             computation_method=ComputationMethod.DIRECT,
             evidence=evidence,
-            confidence=0.8,  # Rules are deterministic but may miss nuance
+            confidence=0.8,
         )
-        
         return SemanticScore(
             value=value,
             metric_name=metric_name,
@@ -218,7 +195,7 @@ class StrictScoreFactory:
             higher_is_worse=higher_is_worse,
             provenance=provenance,
         )
-    
+
     @staticmethod
     def from_ml(
         value: float,
@@ -228,7 +205,6 @@ class StrictScoreFactory:
         evidence: Optional[List[str]] = None,
         higher_is_worse: bool = True,
     ) -> SemanticScore:
-        """Create score from ML classifier."""
         provenance = ProvenanceRecord(
             evaluator_type=EvaluatorType.ML_CLASSIFIER,
             evaluator_id=model_id,
@@ -236,14 +212,13 @@ class StrictScoreFactory:
             evidence=evidence or [],
             confidence=confidence,
         )
-        
         return SemanticScore(
             value=value,
             metric_name=metric_name,
             higher_is_worse=higher_is_worse,
             provenance=provenance,
         )
-    
+
     @staticmethod
     def from_llm(
         value: float,
@@ -254,7 +229,6 @@ class StrictScoreFactory:
         evidence: Optional[List[str]] = None,
         higher_is_worse: bool = True,
     ) -> SemanticScore:
-        """Create score from LLM judge."""
         provenance = ProvenanceRecord(
             evaluator_type=EvaluatorType.LLM_JUDGE,
             evaluator_id=model_id,
@@ -264,14 +238,13 @@ class StrictScoreFactory:
             model_temperature=temperature,
             confidence=0.7 if temperature > 0 else 0.85,
         )
-        
         return SemanticScore(
             value=value,
             metric_name=metric_name,
             higher_is_worse=higher_is_worse,
             provenance=provenance,
         )
-    
+
     @staticmethod
     def from_human(
         value: float,
@@ -280,22 +253,20 @@ class StrictScoreFactory:
         reasoning: Optional[str] = None,
         higher_is_worse: bool = True,
     ) -> SemanticScore:
-        """Create score from human evaluation."""
         provenance = ProvenanceRecord(
             evaluator_type=EvaluatorType.HUMAN,
             evaluator_id=annotator_id,
             computation_method=ComputationMethod.DIRECT,
             reasoning=reasoning,
-            confidence=0.95,  # Humans are authoritative
+            confidence=0.95,
         )
-        
         return SemanticScore(
             value=value,
             metric_name=metric_name,
             higher_is_worse=higher_is_worse,
             provenance=provenance,
         )
-    
+
     @staticmethod
     def aggregate(
         scores: List[SemanticScore],
@@ -304,46 +275,64 @@ class StrictScoreFactory:
         weights: Optional[Dict[str, float]] = None,
         higher_is_worse: bool = True,
     ) -> SemanticScore:
-        """Aggregate multiple scores with full provenance chain."""
+        """Aggregate scores and retain links to every upstream provenance."""
+
         if not scores:
-            raise ValueError("Cannot aggregate empty score list")
-        
-        input_scores = {s.provenance.provenance_id: s.value for s in scores}
-        parent_provenances = [s.provenance.provenance_id for s in scores]
-        
-        # Compute aggregated value
+            raise ValueError("Cannot aggregate an empty score list")
+
+        input_scores = {
+            score.provenance.provenance_id: score.value for score in scores
+        }
+        parent_provenances = [
+            score.provenance.provenance_id for score in scores
+        ]
+        applied_weights: Dict[str, float] = {}
+
         if method == ComputationMethod.AVERAGED:
-            value = sum(s.value for s in scores) / len(scores)
-        elif method == ComputationMethod.WEIGHTED and weights:
-            total_weight = sum(weights.values())
-            value = sum(s.value * weights.get(s.metric_name, 1.0) for s in scores) / total_weight
+            value = sum(score.value for score in scores) / len(scores)
+        elif method == ComputationMethod.WEIGHTED:
+            applied_weights = {
+                score.metric_name: (weights or {}).get(score.metric_name, 1.0)
+                for score in scores
+            }
+            if any(weight < 0 for weight in applied_weights.values()):
+                raise ValueError("Weighted aggregation does not accept negative weights")
+            total_weight = sum(applied_weights.values())
+            if total_weight <= 0:
+                raise ValueError("Weighted aggregation requires positive total weight")
+            value = (
+                sum(
+                    score.value * applied_weights[score.metric_name]
+                    for score in scores
+                )
+                / total_weight
+            )
         elif method == ComputationMethod.MAX:
-            value = max(s.value for s in scores)
+            value = max(score.value for score in scores)
         elif method == ComputationMethod.MIN:
-            value = min(s.value for s in scores)
+            value = min(score.value for score in scores)
         else:
-            value = sum(s.value for s in scores) / len(scores)
-        
-        # Aggregate confidence
-        avg_confidence = sum(s.provenance.confidence for s in scores) / len(scores)
-        
+            raise ValueError(f"Unsupported aggregation method: {method.value}")
+
+        avg_confidence = (
+            sum(score.provenance.confidence for score in scores) / len(scores)
+        )
         provenance = ProvenanceRecord(
             evaluator_type=EvaluatorType.AGGREGATED,
             evaluator_id="aggregator",
             computation_method=method,
             input_scores=input_scores,
-            weights_applied=weights or {},
+            weights_applied=applied_weights,
             parent_provenances=parent_provenances,
-            confidence=avg_confidence * 0.95,  # Slight penalty for aggregation
+            confidence=avg_confidence * 0.95,
         )
-        
         return SemanticScore(
             value=value,
             metric_name=metric_name,
             higher_is_worse=higher_is_worse,
             provenance=provenance,
         )
-    
+
     @staticmethod
     def compute(
         value: float,
@@ -352,12 +341,19 @@ class StrictScoreFactory:
         input_scores: Dict[str, SemanticScore],
         higher_is_worse: bool = True,
     ) -> SemanticScore:
-        """Create computed score with formula provenance."""
-        input_values = {k: s.value for k, s in input_scores.items()}
-        parent_provenances = [s.provenance.provenance_id for s in input_scores.values()]
-        
-        avg_confidence = sum(s.provenance.confidence for s in input_scores.values()) / len(input_scores)
-        
+        """Create a derived score and record the source scores/formula."""
+
+        if not input_scores:
+            raise ValueError("Computed scores require at least one input score")
+
+        input_values = {key: score.value for key, score in input_scores.items()}
+        parent_provenances = [
+            score.provenance.provenance_id for score in input_scores.values()
+        ]
+        avg_confidence = (
+            sum(score.provenance.confidence for score in input_scores.values())
+            / len(input_scores)
+        )
         provenance = ProvenanceRecord(
             evaluator_type=EvaluatorType.COMPUTED,
             evaluator_id="formula_computer",
@@ -367,7 +363,6 @@ class StrictScoreFactory:
             parent_provenances=parent_provenances,
             confidence=avg_confidence,
         )
-        
         return SemanticScore(
             value=value,
             metric_name=metric_name,
@@ -377,47 +372,33 @@ class StrictScoreFactory:
 
 
 class AuditTrail(BaseModel):
-    """
-    Complete audit trail for an evaluation.
-    
-    Captures everything needed to explain and reproduce decisions.
-    """
-    
-    # Identification
-    audit_id: str = Field(default_factory=lambda: datetime.utcnow().strftime("%Y%m%d%H%M%S%f"))
+    """Audit record for scores, decision steps, and provenance links."""
+
+    audit_id: str = Field(default_factory=_timestamp_id)
     evaluation_id: str = ""
     episode_id: str = ""
-    
-    # Timestamps
-    started_at: datetime = Field(default_factory=datetime.utcnow)
+
+    started_at: datetime = Field(default_factory=_utcnow)
     completed_at: Optional[datetime] = None
-    
-    # All scores with provenance
+
     scores: Dict[str, SemanticScore] = Field(default_factory=dict)
-    
-    # Decision chain
     decision_chain: List[Dict[str, Any]] = Field(default_factory=list)
-    
-    # Final decision
+
     final_decision: Optional[str] = None
     decision_provenance: Optional[ProvenanceRecord] = None
-    
-    # Human interactions
+
     human_reviews: List[Dict[str, Any]] = Field(default_factory=list)
     human_overrides: List[Dict[str, Any]] = Field(default_factory=list)
-    
-    # Warnings and anomalies
+
     warnings: List[str] = Field(default_factory=list)
     anomalies_detected: List[Dict[str, Any]] = Field(default_factory=list)
-    
-    # Reproducibility info
+
     random_seeds_used: Dict[str, int] = Field(default_factory=dict)
     model_versions: Dict[str, str] = Field(default_factory=dict)
-    
+
     def add_score(self, key: str, score: SemanticScore) -> None:
-        """Add a score to the audit trail."""
         self.scores[key] = score
-    
+
     def add_decision_step(
         self,
         step_name: str,
@@ -425,171 +406,172 @@ class AuditTrail(BaseModel):
         output: str,
         reasoning: str,
     ) -> None:
-        """Record a decision step."""
-        self.decision_chain.append({
-            "step": step_name,
-            "timestamp": datetime.utcnow().isoformat(),
-            "input_scores": input_scores,
-            "output": output,
-            "reasoning": reasoning,
-        })
-    
+        self.decision_chain.append(
+            {
+                "step": step_name,
+                "timestamp": _utcnow().isoformat(),
+                "input_scores": input_scores,
+                "output": output,
+                "reasoning": reasoning,
+            }
+        )
+
     def add_human_review(
         self,
         reviewer_id: str,
         action: str,
         reasoning: Optional[str] = None,
     ) -> None:
-        """Record human review."""
-        self.human_reviews.append({
-            "reviewer": reviewer_id,
-            "action": action,
-            "reasoning": reasoning,
-            "timestamp": datetime.utcnow().isoformat(),
-        })
-    
+        self.human_reviews.append(
+            {
+                "reviewer": reviewer_id,
+                "action": action,
+                "reasoning": reasoning,
+                "timestamp": _utcnow().isoformat(),
+            }
+        )
+
     def add_warning(self, warning: str) -> None:
-        """Add a warning to the audit trail."""
-        self.warnings.append(f"[{datetime.utcnow().isoformat()}] {warning}")
-    
+        self.warnings.append(f"[{_utcnow().isoformat()}] {warning}")
+
     def finalize(self, decision: str, provenance: ProvenanceRecord) -> None:
-        """Finalize the audit trail with final decision."""
         self.final_decision = decision
         self.decision_provenance = provenance
-        self.completed_at = datetime.utcnow()
-    
+        self.completed_at = _utcnow()
+
     def to_report(self) -> Dict[str, Any]:
-        """Export as audit report."""
+        duration_ms = None
+        if self.completed_at:
+            duration_ms = (self.completed_at - self.started_at).total_seconds() * 1000
+
         return {
             "audit_id": self.audit_id,
             "evaluation_id": self.evaluation_id,
             "episode_id": self.episode_id,
-            "duration_ms": (self.completed_at - self.started_at).total_seconds() * 1000 if self.completed_at else None,
+            "duration_ms": duration_ms,
             "final_decision": self.final_decision,
-            "scores": {k: v.to_audit_entry() for k, v in self.scores.items()},
+            "scores": {
+                key: score.to_audit_entry() for key, score in self.scores.items()
+            },
             "decision_chain": self.decision_chain,
             "human_reviews": self.human_reviews,
             "warnings": self.warnings,
             "anomalies": self.anomalies_detected,
-            "provenance_hash": self.decision_provenance.get_hash() if self.decision_provenance else None,
+            "provenance_hash": (
+                self.decision_provenance.get_hash()
+                if self.decision_provenance
+                else None
+            ),
         }
-    
+
     def verify_provenance_chain(self) -> List[str]:
-        """Verify all provenance chains are complete. Returns list of issues."""
-        issues = []
-        
+        """Return broken references in aggregate/computed score provenance."""
+
+        issues: List[str] = []
+        known_ids = {
+            score.provenance.provenance_id for score in self.scores.values()
+        }
+
         for key, score in self.scores.items():
-            # Check aggregated/computed scores have parents
-            if score.provenance.evaluator_type in [EvaluatorType.AGGREGATED, EvaluatorType.COMPUTED]:
-                if not score.provenance.parent_provenances:
-                    issues.append(f"Score '{key}' is {score.provenance.evaluator_type.value} but has no parent provenances")
-                
-                # Verify parents exist
-                for parent_id in score.provenance.parent_provenances:
-                    found = any(s.provenance.provenance_id == parent_id for s in self.scores.values())
-                    if not found:
-                        issues.append(f"Score '{key}' references missing parent provenance '{parent_id}'")
-        
+            if score.provenance.evaluator_type not in {
+                EvaluatorType.AGGREGATED,
+                EvaluatorType.COMPUTED,
+            }:
+                continue
+
+            if not score.provenance.parent_provenances:
+                issues.append(
+                    f"Score '{key}' is {score.provenance.evaluator_type.value} "
+                    "but has no parent provenances"
+                )
+                continue
+
+            for parent_id in score.provenance.parent_provenances:
+                if parent_id not in known_ids:
+                    issues.append(
+                        f"Score '{key}' references missing parent provenance "
+                        f"'{parent_id}'"
+                    )
+
         return issues
 
 
 class ProvenanceValidator:
-    """
-    Validates provenance requirements are met.
-    
-    Use this to enforce the invariant before accepting any evaluation.
-    """
-    
+    """Validate the minimum provenance contract for scores and decisions."""
+
     @staticmethod
     def validate_score(score: Any) -> List[str]:
-        """Validate a score has proper provenance. Returns list of issues."""
-        issues = []
-        
-        # Must be SemanticScore
+        issues: List[str] = []
+
         if not isinstance(score, SemanticScore):
-            issues.append(f"Score is not SemanticScore (got {type(score).__name__})")
-            return issues
-        
-        # Must have provenance
-        if not score.provenance:
-            issues.append("Score missing provenance")
-            return issues
-        
-        # Provenance must have evaluator
-        if not score.provenance.evaluator_type:
-            issues.append("Provenance missing evaluator_type")
-        
+            return [
+                f"Score is not SemanticScore (got {type(score).__name__})"
+            ]
+
         if not score.provenance.evaluator_id:
             issues.append("Provenance missing evaluator_id")
-        
-        # LLM evaluations must have reasoning
-        if score.provenance.evaluator_type == EvaluatorType.LLM_JUDGE:
-            if not score.provenance.reasoning:
-                issues.append("LLM judge provenance missing reasoning")
-        
-        # Aggregated scores must have inputs
+
+        if (
+            score.provenance.evaluator_type == EvaluatorType.LLM_JUDGE
+            and not score.provenance.reasoning
+        ):
+            issues.append("LLM judge provenance missing reasoning")
+
         if score.provenance.evaluator_type == EvaluatorType.AGGREGATED:
             if not score.provenance.input_scores:
                 issues.append("Aggregated score missing input_scores")
             if not score.provenance.parent_provenances:
                 issues.append("Aggregated score missing parent_provenances")
-        
+
         return issues
-    
+
     @staticmethod
     def validate_decision(
         decision: str,
         provenance: ProvenanceRecord,
         audit_trail: AuditTrail,
     ) -> List[str]:
-        """Validate a decision has proper provenance. Returns list of issues."""
-        issues = []
-        
-        # Decision must have provenance
-        if not provenance:
-            issues.append("Decision missing provenance")
-            return issues
-        
-        # Decision provenance should reference contributing scores
-        if provenance.evaluator_type == EvaluatorType.COUNCIL:
-            if not provenance.parent_provenances:
-                issues.append("Council decision missing judge provenances")
-        
-        # Audit trail should be complete
-        trail_issues = audit_trail.verify_provenance_chain()
-        issues.extend(trail_issues)
-        
+        del decision
+        issues: List[str] = []
+
+        if provenance is None:
+            return ["Decision missing provenance"]
+
+        if (
+            provenance.evaluator_type == EvaluatorType.COUNCIL
+            and not provenance.parent_provenances
+        ):
+            issues.append("Council decision missing judge provenances")
+
+        issues.extend(audit_trail.verify_provenance_chain())
         return issues
 
 
 def enforce_no_raw_floats(func):
-    """
-    Decorator to enforce that functions don't return raw floats for scores.
-    
-    Use this on any function that returns scores to catch violations.
-    """
-    import functools
-    
+    """Reject score-like raw floats returned from decorated functions."""
+
     @functools.wraps(func)
     def wrapper(*args, **kwargs):
         result = func(*args, **kwargs)
-        
-        # Check return value
+
         if isinstance(result, float):
             raise TypeError(
                 f"Function {func.__name__} returned raw float {result}. "
                 "Use SemanticScore with provenance instead."
             )
-        
-        # Check dict values
+
         if isinstance(result, dict):
             for key, value in result.items():
-                if isinstance(value, float) and 0 <= value <= 1 and "time" not in key.lower():
+                if (
+                    isinstance(value, float)
+                    and 0 <= value <= 1
+                    and "time" not in key.lower()
+                ):
                     raise TypeError(
-                        f"Function {func.__name__} returned raw float in dict key '{key}'. "
-                        "Use SemanticScore with provenance instead."
+                        f"Function {func.__name__} returned raw float in dict "
+                        f"key '{key}'. Use SemanticScore with provenance instead."
                     )
-        
+
         return result
-    
+
     return wrapper
