@@ -5,12 +5,12 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "risklab"
 version = "0.1.0"
-description = "Risk-Conditioned AI Evaluation Lab - Measure and analyze manipulative behavior in AI systems"
+description = "Experimental framework for auditable behavioral evaluation of AI systems"
 readme = "README.md"
 license = {text = "MIT"}
 requires-python = ">=3.10"
 authors = [
-    {name = "AI Safety Lab"}
+    {name = "Yuvan Chikka"}
 ]
 classifiers = [
     "Development Status :: 3 - Alpha",
@@ -52,6 +52,9 @@ local = [
     "torch>=2.0.0",
     "accelerate>=0.30.0",
 ]
+
+[project.urls]
+Repository = "https://github.com/Ultraviolet-Chikorita/RiskLab"
 
 [project.scripts]
 risklab = "risklab.cli:main"
