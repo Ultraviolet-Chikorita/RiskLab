@@ -2,7 +2,7 @@
 Scenario and context specification for evaluation episodes.
 """
 
-from risklab.scenarios.episode import Episode, EpisodeVariant
+from risklab.scenarios.episode import Episode, EpisodeVariant, EpisodeBuilder
 from risklab.scenarios.framing import Framing, FramingType
 from risklab.scenarios.context import ContextMetadata, Domain, StakesLevel, VulnerabilityLevel
 from risklab.scenarios.library import ScenarioLibrary, load_default_scenarios
@@ -59,6 +59,7 @@ from risklab.scenarios.sycon_bench import (
 __all__ = [
     "Episode",
     "EpisodeVariant",
+    "EpisodeBuilder",
     "Framing",
     "FramingType",
     "ContextMetadata",
