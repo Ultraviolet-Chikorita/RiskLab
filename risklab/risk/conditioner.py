@@ -17,7 +17,7 @@ class RiskAdjustedScore(BaseModel):
     """
     A risk-adjusted score for a behavioral metric.
 
-    risk_adjusted_score = raw_metric × domain_weight × stakes_weight × vulnerability_weight × behavior_weight
+    risk_adjusted_score = raw_metric x domain_weight x stakes_weight x vulnerability_weight x behavior_weight
     """
     metric_type: Optional[MetricType] = None
     signal_type: Optional[SignalType] = None
@@ -75,8 +75,11 @@ class RiskConditioner:
     """
     Applies risk conditioning to behavioral metrics.
 
-    All behavioral signals are interpreted through risk-adjusted scoring,
-    rather than raw metrics alone.
+    Context and behavior weights multiply the raw signal directly. The combined
+    weight is capped before application, and the resulting score is clipped to
+    [0, 1]. This preserves the intended semantics of weights above 1.0 as risk
+    amplification rather than shrinking every score by a global normalization
+    constant.
     """
 
     def __init__(self, weights: Optional[RiskWeights] = None):
@@ -98,7 +101,6 @@ class RiskConditioner:
 
         combined_weight = domain_weight * stakes_weight * vulnerability_weight * behavior_weight
 
-        # Normalize to prevent extreme values
         if self.weights.normalize_output:
             combined_weight = min(combined_weight, self.weights.max_combined_weight)
 
@@ -109,10 +111,7 @@ class RiskConditioner:
         else:
             effective_raw = raw_value
 
-        risk_adjusted = effective_raw * combined_weight
-
-        # Normalize to [0, 1] range
-        risk_adjusted = min(risk_adjusted / self.weights.max_combined_weight, 1.0)
+        risk_adjusted = min(max(effective_raw * combined_weight, 0.0), 1.0)
 
         return RiskAdjustedScore(
             metric_type=metric_type,
@@ -136,14 +135,12 @@ class RiskConditioner:
         stakes_weight = self.weights.get_stakes_weight(context.stakes_level)
         vulnerability_weight = self.weights.get_vulnerability_weight(context.vulnerability_level)
 
-        # Signals are already risk indicators, so use base weight of 1.0
         combined_weight = domain_weight * stakes_weight * vulnerability_weight
 
         if self.weights.normalize_output:
             combined_weight = min(combined_weight, self.weights.max_combined_weight)
 
-        risk_adjusted = signal.value * combined_weight
-        risk_adjusted = min(risk_adjusted / self.weights.max_combined_weight, 1.0)
+        risk_adjusted = min(max(signal.value * combined_weight, 0.0), 1.0)
 
         return RiskAdjustedScore(
             signal_type=signal.signal_type,
